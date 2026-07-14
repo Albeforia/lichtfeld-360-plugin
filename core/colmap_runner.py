@@ -323,6 +323,22 @@ def _build_incremental_pipeline_options(
     _try_set_attr(opts, "ba_use_gpu", local_ba_opts.ceres.use_gpu)
     _try_set_attr(opts, "ba_local_backend", local_ba_opts.backend)
     _try_set_attr(opts, "ba_global_backend", global_ba_opts.backend)
+    # CASPAR merges focal length and extra params into a single parameter
+    # block and requires refine_focal_length == refine_extra_params. Force
+    # the two flags to match whenever either local or global BA uses CASPAR,
+    # otherwise the mapper aborts at BA time (default PINHOLE + auto solver).
+    try:
+        CASPAR = pycolmap.BundleAdjustmentBackend.CASPAR
+    except AttributeError:
+        CASPAR = pycolmap.BundleAdjustmentBackend(1)
+    if local_ba_opts.backend == CASPAR or global_ba_opts.backend == CASPAR:
+        if config.refine_focal_length != config.refine_extra_params:
+            logger.warning(
+                "CASPAR requires refine_focal_length == refine_extra_params; "
+                "forcing ba_refine_extra_params=%s to match.",
+                config.refine_focal_length,
+            )
+            _try_set_attr(opts, "ba_refine_extra_params", config.refine_focal_length)
     return opts
 
 
@@ -1194,6 +1210,20 @@ except Exception as exc:
             ba.refine_principal_point = self._config.refine_principal_point
             ba.refine_extra_params = self._config.refine_extra_params
             ba.backend = global_ba_opts.backend
+            # CASPAR merges focal length and extra params into one parameter
+            # block and requires refine_focal_length == refine_extra_params.
+            # Align the two flags when CASPAR is the active BA backend.
+            try:
+                _CASPAR = pycolmap.BundleAdjustmentBackend.CASPAR
+            except AttributeError:
+                _CASPAR = pycolmap.BundleAdjustmentBackend(1)
+            if ba.backend == _CASPAR and ba.refine_focal_length != ba.refine_extra_params:
+                logger.warning(
+                    "CASPAR requires refine_focal_length == refine_extra_params; "
+                    "forcing refine_extra_params=%s to match refine_focal_length.",
+                    ba.refine_focal_length,
+                )
+                ba.refine_extra_params = ba.refine_focal_length
             if global_ba_opts.backend == pycolmap.BundleAdjustmentBackend.CERES:
                 ba.ceres.use_gpu = global_ba_opts.ceres.use_gpu
                 ba.ceres.auto_select_solver_type = global_ba_opts.ceres.auto_select_solver_type
