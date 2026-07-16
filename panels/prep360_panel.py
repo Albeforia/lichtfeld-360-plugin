@@ -442,6 +442,7 @@ class Plugin360Panel(lf.ui.Panel):
         self._completion_summary: str = ""
         self._completion_report: str = ""
         self._import_after: bool = False
+        self._extract_only: bool = False
 
         # Timing accumulator (tracks stage transitions from progress callbacks)
         self._timing_stages: dict[str, dict] = {}
@@ -716,6 +717,7 @@ class Plugin360Panel(lf.ui.Panel):
         model.bind_event("browse_output", self._on_browse_output)
         model.bind_event("run_pipeline", self._on_run_pipeline)
         model.bind_event("run_pipeline_only", self._on_run_pipeline_only)
+        model.bind_event("extract_only", self._on_extract_only)
         model.bind_event("cancel_pipeline", self._on_cancel)
         model.bind_event("toggle_section", self._on_toggle_section)
         # Masking setup events
@@ -2831,6 +2833,13 @@ class Plugin360Panel(lf.ui.Panel):
     def _on_run_pipeline_only(self, handle, event, args):
         del handle, event, args
         self._import_after = False
+        self._extract_only = False
+        self._start_pipeline()
+
+    def _on_extract_only(self, handle, event, args):
+        del handle, event, args
+        self._import_after = False
+        self._extract_only = True
         self._start_pipeline()
 
     def _start_pipeline(self):
@@ -2845,6 +2854,13 @@ class Plugin360Panel(lf.ui.Panel):
         )
         is_resume = self._source_mode_idx == 2
         if is_resume:
+            if self._extract_only:
+                self._error_message = (
+                    "Extract Only is unavailable in re-run COLMAP mode"
+                )
+                if self._handle:
+                    self._handle.dirty_all()
+                return
             pass  # no video required — pipeline reads existing images/
         elif is_fisheye_split:
             if not self._front_video_path or not self._back_video_path:
@@ -2960,6 +2976,7 @@ class Plugin360Panel(lf.ui.Panel):
             keep_pinhole_scaffolding=self._keep_pinhole_scaffolding,
             keep_native_sparse=self._keep_native_sparse,
             keep_extracted_data=self._keep_extracted_data,
+            extract_only=self._extract_only,
         )
 
         self._is_processing = True

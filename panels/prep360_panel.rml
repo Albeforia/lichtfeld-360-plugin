@@ -575,6 +575,7 @@
     <div class="process-section">
       <button class="btn btn--success btn--full" data-event-click="run_pipeline">Process &amp; Import</button>
       <button class="btn btn--secondary btn--full" data-event-click="run_pipeline_only">Process Only</button>
+      <button class="btn btn--secondary btn--full" data-event-click="extract_only">Extract Only</button>
     </div>
 
     <!-- ── Last-run summary ───────────────────────────────── -->

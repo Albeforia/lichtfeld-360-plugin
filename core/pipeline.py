@@ -122,6 +122,13 @@ class PipelineConfig:
     keep_native_sparse: bool = True  # retain COLMAP sparse/ + database.db after native ERP export (native sparse is a valid EQUIRECTANGULAR dataset, unlike scaffold's)
     keep_extracted_data: bool = False  # retain raw frames, pinhole crops, masks, and scaffold data
 
+    # Extract Only mode: skip rig config, COLMAP alignment, and all
+    # reconstruction-dependent output (sparse/, transforms.json). Extraction,
+    # masking (if enabled), and reframing/staging still run — masking is
+    # independent of extract_only — so output_dir/images/ is produced without
+    # camera alignment.
+    extract_only: bool = False
+
     # Fisheye masking
     fisheye_circle_margin: float = 6.0  # Circle mask margin in percent
 
@@ -748,6 +755,11 @@ class PipelineJob:
             if self._check_cancel():
                 raise RuntimeError("Cancelled")
 
+        if cfg.extract_only:
+            return self._finish_extract_only(
+                cfg, out, num_source_frames, num_output_images, t0,
+            )
+
         # ===================================================================
         # Stage 3.5: Closest-Camera Overlap Masks (55-56%)
         # ===================================================================
@@ -945,6 +957,41 @@ class PipelineJob:
         )
 
     # ------------------------------------------------------------------
+    # Extract Only — early return after reframing, before COLMAP
+    # ------------------------------------------------------------------
+
+    def _finish_extract_only(
+        self,
+        cfg: PipelineConfig,
+        out: Path,
+        num_source_frames: int,
+        num_output_images: int,
+        t0: float,
+    ) -> PipelineResult:
+        """Build the result for Extract Only.
+
+        Called from each leaf method right after the reframing / staging
+        stage when ``cfg.extract_only`` is set. Extraction, masking (if
+        ``enable_masking``), and reframing all run as usual — masking is
+        independent of extract_only — while COLMAP alignment, ``sparse/``
+        output, and ``transforms.json`` are skipped.
+        """
+        self._update(
+            "complete", 100.0,
+            f"Reframing complete ({num_source_frames} frames → "
+            f"{num_output_images} images); COLMAP skipped.",
+        )
+        return PipelineResult(
+            success=True,
+            dataset_path=str(out),
+            output_mode=cfg.output_mode,
+            num_source_frames=num_source_frames,
+            num_output_images=num_output_images,
+            elapsed_sec=time.time() - t0,
+        )
+
+
+    # ------------------------------------------------------------------
     # Native ERP path (equirectangular COLMAP, no reframing/rig)
     # ------------------------------------------------------------------
 
@@ -1127,6 +1174,11 @@ class PipelineJob:
 
         if self._check_cancel():
             raise RuntimeError("Cancelled")
+
+        if cfg.extract_only:
+            return self._finish_extract_only(
+                cfg, out, num_source_frames, num_output_images, t0,
+            )
 
         # ===================================================================
         # Stage 4: COLMAP (55-85%)
@@ -1603,6 +1655,12 @@ class PipelineJob:
                 from .rig_config import write_dual_fisheye_rig_config
                 write_dual_fisheye_rig_config(rig_config_path_str)
                 logger.info("Wrote dual fisheye rig config: %s", rig_config_path_str)
+
+        if cfg.extract_only:
+            _eo_images = sum(1 for _p in images_dir.rglob("*") if _p.is_file())
+            return self._finish_extract_only(
+                cfg, out, num_pairs, _eo_images, t0,
+            )
 
         # ===================================================================
         # Stage 5: COLMAP alignment (67-95%)
