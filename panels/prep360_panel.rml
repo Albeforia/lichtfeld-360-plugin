@@ -57,6 +57,19 @@
         <button class="btn btn--secondary btn--full" data-event-click="clear_video">Clear</button>
       </div>
 
+      <!-- Time Range (seconds) — restrict extraction/processing to a window -->
+      <div class="setting-row" data-if="show_time_range">
+        <span class="prop-label">Time Range (s)</span>
+        <div class="inline-input-row">
+          <input type="text" data-value="time_range_start_str" placeholder="Start" />
+          <input type="text" data-value="time_range_end_str" placeholder="End" />
+        </div>
+      </div>
+      <div class="setting-row" data-if="show_time_range">
+        <span class="prop-label"></span>
+        <span class="status-text status-muted">{{time_range_hint}}</span>
+      </div>
+
       <!-- Resume mode: re-run COLMAP on existing output directory -->
       <div data-if="show_resume_mode">
         <div class="setting-row">

@@ -7,6 +7,7 @@ from __future__ import annotations
 import ctypes
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -343,6 +344,8 @@ class Plugin360Panel(lf.ui.Panel):
         self._extract_fps: float = 1.0
         self._extract_sharpness_idx: int = 1  # default: Basic
         self._blur_metric_idx: int = 0        # default: Tenengrad
+        self._time_range_start_str: str = ""  # Time Range start, seconds; empty = from start
+        self._time_range_end_str: str = ""    # Time Range end, seconds; empty = to end
 
         # Masking
         self._setup_state: MaskingSetupState = MaskingSetupState()
@@ -495,6 +498,12 @@ class Plugin360Panel(lf.ui.Panel):
         model.bind("blur_metric_idx", lambda: str(self._blur_metric_idx), self._set_blur_metric)
         model.bind_func("est_frames_text", self._get_est_frames_text)
         model.bind_func("gpu_indicator_text", self._get_gpu_indicator_text)
+
+        # -- Time Range (seconds) --
+        model.bind_func("show_time_range", self._show_time_range)
+        model.bind("time_range_start_str", lambda: self._time_range_start_str, self._set_time_range_start)
+        model.bind("time_range_end_str", lambda: self._time_range_end_str, self._set_time_range_end)
+        model.bind_func("time_range_hint", self._get_time_range_hint)
 
         # -- GPU extraction opt-in row --
         model.bind_func("show_gpu_row", self._show_gpu_row)
@@ -1122,13 +1131,107 @@ class Plugin360Panel(lf.ui.Panel):
     def _get_est_frames_text(self) -> str:
         if not self._video_info:
             return "Select a video source"
+        start, end, err = self._parse_time_range()
+        if err:
+            return "Estimated frames   \u2014"
         interval = 1.0 / max(0.1, self._extract_fps)
-        base = VideoAnalyzer.estimate_frame_count(self._video_info, interval)
+        dur = self._video_info.duration_seconds
+        start = start if start is not None else 0.0
+        end = end if end is not None else dur
+        eff_dur = max(0.0, end - start)
+        base = int(eff_dur / interval)
         preset = EXTRACT_SHARPNESS_PRESETS[self._extract_sharpness_idx]
         if preset["scene_threshold"] > 0:
             extra = int(base * 0.2)
             return f"Estimated frames   ~{base}\u2013{base + extra}"
         return f"Estimated frames   ~{base}"
+
+    # ── Time Range (seconds) ────────────────────────────────
+
+    def _show_time_range(self) -> bool:
+        """Show the Time Range box once any video source is available."""
+        if self._video_loaded:
+            return True
+        if (
+            self._output_mode_idx in _FISHEYE_MODES
+            and self._source_mode_idx == 1
+            and self._front_video_path
+            and self._back_video_path
+        ):
+            return True
+        return False
+
+    def _parse_time_range(self) -> tuple[Optional[float], Optional[float], str]:
+        """Return ``(start, end, error)`` seconds.
+
+        ``start``/``end`` are ``None`` when their field is blank or when a
+        validation error occurs.  ``error`` is ``''`` when the fields are
+        valid; otherwise it contains a human-readable reason and both
+        ``start`` and ``end`` are ``None``.
+
+        Single source of truth shared by the hint, estimated-frames preview,
+        and ``_start_processing`` pre-flight gate.
+        """
+        start = end = None
+        s = (self._time_range_start_str or "").strip()
+        e = (self._time_range_end_str or "").strip()
+
+        if s:
+            try:
+                start = float(s)
+            except ValueError:
+                return (None, None, "Enter numbers only for Start and End")
+            if not math.isfinite(start):
+                return (None, None, "Enter numbers only for Start and End")
+        if e:
+            try:
+                end = float(e)
+            except ValueError:
+                return (None, None, "Enter numbers only for Start and End")
+            if not math.isfinite(end):
+                return (None, None, "Enter numbers only for Start and End")
+
+        if start is not None and start < 0:
+            return (None, None, "Start must be \u2265 0")
+        if end is not None and end < 0:
+            return (None, None, "End must be \u2265 0")
+        if start is not None and end is not None and start > end:
+            return (None, None, "Start must be \u2264 End")
+
+        if self._video_info is not None:
+            dur = self._video_info.duration_seconds
+            if start is not None and start > dur:
+                return (None, None, f"Start exceeds video duration ({dur:.1f} s)")
+            if end is not None and end > dur:
+                return (None, None, f"End exceeds video duration ({dur:.1f} s)")
+
+        return (start, end, "")
+
+    def _get_time_range_hint(self) -> str:
+        if not self._video_info:
+            if self._time_range_start_str.strip() or self._time_range_end_str.strip():
+                return "Seconds. Applies to both lens videos."
+            return "Seconds (Start and End)."
+        dur = self._video_info.duration_seconds
+        start, end, err = self._parse_time_range()
+        if err:
+            return f"Invalid - {err}."
+        if start is None and end is None:
+            return f"Video is {dur:.1f} s. Leave blank for the whole video."
+        s = start if start is not None else 0.0
+        e = end if end is not None else dur
+        eff = max(0.0, e - s)
+        return f"Extracting {eff:.1f} s of {dur:.1f} s (from {s:.1f} to {e:.1f} s)."
+
+    def _set_time_range_start(self, val):
+        self._time_range_start_str = str(val) if val is not None else ""
+        if self._handle:
+            self._handle.dirty_all()
+
+    def _set_time_range_end(self, val):
+        self._time_range_end_str = str(val) if val is not None else ""
+        if self._handle:
+            self._handle.dirty_all()
 
     def _get_gpu_indicator_text(self) -> str:
         from ..core.sharpest_extractor import SharpestExtractor
@@ -2769,7 +2872,10 @@ class Plugin360Panel(lf.ui.Panel):
         self._video_path = ""
         self._video_info = None
         self._video_info_text = ""
+        self._time_range_start_str = ""
+        self._time_range_end_str = ""
         self._error_message = ""
+
         # Also clear fisheye-specific detection state
         self._camera_family_detected = None
         if self._handle:
@@ -2828,6 +2934,7 @@ class Plugin360Panel(lf.ui.Panel):
     def _on_run_pipeline(self, handle, event, args):
         del handle, event, args
         self._import_after = True
+        self._extract_only = False  # 防止沿用 Extract Only 的残留状态，保证完整运行
         self._start_pipeline()
 
     def _on_run_pipeline_only(self, handle, event, args):
@@ -2881,6 +2988,15 @@ class Plugin360Panel(lf.ui.Panel):
                 self._handle.dirty_all()
             return
 
+        # Validate Time Range via the shared check so the preview, hint and
+        # pre-flight gate always agree (no silent swap/clamp anywhere).
+        tr_start, tr_end, tr_err = self._parse_time_range()
+        if tr_err:
+            self._error_message = f"Time Range: {tr_err}"
+            if self._handle:
+                self._handle.dirty_all()
+            return
+
         self._error_message = ""
         preset_name = self._get_selected_preset_name()
         output_mode = self._get_output_mode()
@@ -2911,10 +3027,15 @@ class Plugin360Panel(lf.ui.Panel):
                 self._handle.dirty_all()
             return
 
+        # Time Range (seconds): restrict extraction/processing to a window.
+        # Values are already validated above, so pass them through as-is.
+        tr_start_sec, tr_end_sec = tr_start, tr_end
         config = PipelineConfig(
             video_path=self._video_path,
             output_dir=self._output_path,
             interval=1.0 / max(0.1, self._extract_fps),
+            start_sec=tr_start_sec,
+            end_sec=tr_end_sec,
             extraction_sharpness=sharpness_modes[self._extract_sharpness_idx],
             blur_metric=blur_metric,
             scene_threshold=sharpness_preset["scene_threshold"],
@@ -3034,6 +3155,13 @@ class Plugin360Panel(lf.ui.Panel):
             f"Output mode: {OUTPUT_MODE_LABELS[self._output_mode_idx]}"
         )
         self._append_processing_log(f"Output: {self._output_path}")
+        if tr_start is not None or tr_end is not None:
+            tr_dur = self._video_info.duration_seconds if self._video_info else None
+            tr_s = tr_start if tr_start is not None else 0.0
+            tr_e = tr_end if tr_end is not None else (tr_dur if tr_dur is not None else tr_s)
+            self._append_processing_log(
+                f"Time range: {tr_s:.1f}\u2013{tr_e:.1f} s"
+            )
         self._append_processing_log("Pipeline queued.")
 
         self._job = PipelineJob(
@@ -3307,7 +3435,7 @@ class Plugin360Panel(lf.ui.Panel):
                 total,
             )
 
-            if self._import_after and result.dataset_path:
+            if self._import_after and result.dataset_path and not self._extract_only:
                 try:
                     # ERP and native fisheye still pass the JSON file directly.
                     # Fisheye (Pinhole) uses output/colmap as the dataset base
